@@ -1,0 +1,26 @@
+node_modules/
+dist/
+coverage/
+.cache/
+*.tsbuildinfo
+
+# integration harness scratch
+test-results/
+playwright-report/
+.pb_data/
+pb_data/
+
+# go
+server/go/**/pb_data/
+*.test
+
+.DS_Store
+.env
+.env.*
+!.env.example
+.idea/
+.vscode/
+
+# Claude Code worktrees live outside iCloud sync (.nosync) with a symlink at the old path
+.claude/worktrees
+.claude/worktrees.nosync/

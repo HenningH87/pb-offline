@@ -1,0 +1,63 @@
+{
+  "name": "pb-offline",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Offline-first sync engine for PocketBase — local-first Dexie mirror, reactive queries, self-healing link.",
+  "license": "MIT",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "SPEC.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project unit --project integration",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:watch": "vitest --project unit",
+    "test:e2e": "playwright test",
+    "pretest:integration": "node scripts/fetch-pb.mjs",
+    "pretest:e2e": "node scripts/fetch-pb.mjs",
+    "pb:fetch": "node scripts/fetch-pb.mjs",
+    "test:server": "cd server/go && go vet ./... && go test ./..."
+  },
+  "peerDependencies": {
+    "dexie": "^4.0.0",
+    "pocketbase": "^0.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "dexie": "^4.0.11",
+    "fake-indexeddb": "^6.0.0",
+    "pocketbase": "^0.28.0",
+    "typescript": "^5.7.0",
+    "vitest": "^4.1.11"
+  },
+  "pbOffline": {
+    "pocketbaseVersion": "0.40.2"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "pocketbase",
+    "offline-first",
+    "sync",
+    "dexie",
+    "indexeddb",
+    "local-first"
+  ]
+}

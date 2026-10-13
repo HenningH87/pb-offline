@@ -1,0 +1,54 @@
+{
+  "$comment": "Integration fixture schema (TESTPLAN §2.1). Two owner-scoped collections with a parent/child relation, one shared collection with no owner. `{{users}}` expands to the id of the stock `users` auth collection. The `deletions` collection is NOT here — the server helper creates it, and that it does so is part of what the integration tier asserts.",
+  "$comment_rules": "The owner-scoped rules are SPEC §2.6's prescribed set, verbatim, and the two that are not the obvious `owner = @request.auth.id` are the point: PocketBase evaluates an updateRule as a FILTER over the record's EXISTING state and never re-checks the result, so without `@request.body.owner:isset = false` any user may PATCH {owner: someone-else} and plant a record in another account. `test/integration/rules.spec.ts` asserts that refusal against a real server.",
+  "collections": [
+    {
+      "name": "projects",
+      "type": "base",
+      "listRule": "owner = @request.auth.id",
+      "viewRule": "owner = @request.auth.id",
+      "createRule": "@request.body.owner = @request.auth.id",
+      "updateRule": "owner = @request.auth.id && @request.body.owner:isset = false",
+      "deleteRule": "owner = @request.auth.id",
+      "fields": [
+        { "name": "title", "type": "text" },
+        { "name": "owner", "type": "relation", "collectionId": "{{users}}", "maxSelect": 1, "required": true, "cascadeDelete": true },
+        { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false, "system": true },
+        { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true, "system": true }
+      ],
+      "indexes": ["CREATE INDEX `idx_projects_owner` ON `projects` (`owner`, `updated`, `id`)"]
+    },
+    {
+      "name": "tasks",
+      "type": "base",
+      "listRule": "owner = @request.auth.id",
+      "viewRule": "owner = @request.auth.id",
+      "createRule": "@request.body.owner = @request.auth.id",
+      "updateRule": "owner = @request.auth.id && @request.body.owner:isset = false",
+      "deleteRule": "owner = @request.auth.id",
+      "fields": [
+        { "name": "title", "type": "text" },
+        { "name": "done", "type": "bool" },
+        { "name": "project", "type": "relation", "collectionId": "{{projects}}", "maxSelect": 1, "cascadeDelete": true },
+        { "name": "owner", "type": "relation", "collectionId": "{{users}}", "maxSelect": 1, "required": true, "cascadeDelete": true },
+        { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false, "system": true },
+        { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true, "system": true }
+      ],
+      "indexes": ["CREATE INDEX `idx_tasks_owner` ON `tasks` (`owner`, `updated`, `id`)"]
+    },
+    {
+      "name": "tags",
+      "type": "base",
+      "listRule": "",
+      "viewRule": "",
+      "createRule": null,
+      "updateRule": null,
+      "deleteRule": null,
+      "fields": [
+        { "name": "label", "type": "text" },
+        { "name": "created", "type": "autodate", "onCreate": true, "onUpdate": false, "system": true },
+        { "name": "updated", "type": "autodate", "onCreate": true, "onUpdate": true, "system": true }
+      ]
+    }
+  ]
+}
