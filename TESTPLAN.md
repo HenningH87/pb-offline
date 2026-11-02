@@ -242,6 +242,11 @@ those actually pushed. 500 cases.
   mirror and comes up on a fresh empty one with `started: true`. Still offline,
   the retry keeps both the marker and the data — destroying unpushed work is
   `force`'s decision, never a retry's.
+- **a write refused during the retry's drain is not wiped** (SPEC §15.4, added
+  2 Nov 2026): the server answers the retried create with a 400, the write is
+  parked as a dead letter and the queue empties; the retry keeps the mirror
+  (row and dead letter both there), clears the marker, and a clean retry still
+  wipes as before.
 - **`staleOwnerDays`** (SPEC §14.2, same audit): off by default (the sweep
   reports nothing at any age); with a window set, another owner's mirror older
   than it is deleted and a fresher one kept; the CURRENT owner's and the

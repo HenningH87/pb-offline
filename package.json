@@ -1,6 +1,6 @@
 {
   "name": "pb-offline",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "private": true,
   "description": "Offline-first sync engine for PocketBase — local-first Dexie mirror, reactive queries, self-healing link.",
   "license": "MIT",

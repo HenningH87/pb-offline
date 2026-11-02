@@ -1368,9 +1368,18 @@ export interface PromotionResult { promoted: number; byCollection: Record<string
    `signout` row in `_state` (inside the database it describes, so a later wipe
    erases it for free) records the attempt, and the next `start()` for that
    owner MUST retry: drain again, and wipe once the queue is empty, then open a
-   fresh mirror for the session that is now running. A queue that still will
-   not drain keeps the marker rather than forcing the wipe — destroying
+   fresh mirror for the session that is now running. The retry waits
+   `max(flushTimeoutMs, 5000)`: a sign-out that could not wait at all (no
+   link, `0`) says nothing about the session now running. A queue that still
+   will not drain keeps the marker rather than forcing the wipe — destroying
    unpushed work is the caller's decision (`force`), never a retry's.
+
+   The retry wipes only when `_pending` AND `_deadletter` are both empty. A
+   write the server refuses during the retry's drain is parked, which empties
+   the queue, and a wipe would destroy the only copy of it. With a dead letter
+   the mirror stays open for the owner who is signed in again (who sees the
+   parked write as on any other day) and the marker is CLEARED: that sign-out
+   is over, and a later `start()` must not wipe a mirror its owner is using.
 
    Without this, "sign out" on a dead link leaves a complete copy of the
    account on the device permanently, while the UI reports a completed
