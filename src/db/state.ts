@@ -162,6 +162,16 @@ export async function markSignOutPending(db: PBODexie, pending: SignOutPending):
   await db.pbo.state.put({ key: SIGNOUT_KEY, state: pending, drainerTabId: null, heartbeatAt: pending.at });
 }
 
+/**
+ * Forget the unfinished sign-out (SPEC §15.4). Called when the owner is signed
+ * in again on a mirror the retry must keep — a parked dead letter — so the
+ * sign-out that owed the wipe is over and no later `start()` wipes a mirror
+ * its owner is using.
+ */
+export async function clearSignOutPending(db: PBODexie): Promise<void> {
+  await db.pbo.state.delete(SIGNOUT_KEY);
+}
+
 /** The unfinished sign-out this mirror owes, or null. */
 export async function readSignOutPending(db: PBODexie): Promise<SignOutPending | null> {
   const row = await db.pbo.state.get(SIGNOUT_KEY);

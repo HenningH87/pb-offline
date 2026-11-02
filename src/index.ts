@@ -29,6 +29,7 @@ import { checkDexiePeer } from './db/peer.js';
 import {
   INITIAL_STATE,
   liveState,
+  clearSignOutPending,
   markSignOutPending,
   readSignOutPending,
   sameSyncState,
@@ -41,6 +42,9 @@ import { createRealtime, type Realtime } from './sync/realtime.js';
 import { createSession, ownerKeyOf } from './auth/session.js';
 import { discard as discardDeadLetterEntry, retry as retryDeadLetterEntry } from './sync/deadletter.js';
 import type { PBODexie } from './db/schema.js';
+
+/** SPEC §15 — `signOut()`'s drain wait, and the floor of the retry's. */
+const DEFAULT_FLUSH_TIMEOUT_MS = 5_000;
 
 /**
  * Create an engine bound to a PocketBase SDK instance.
@@ -329,14 +333,23 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
    *
    * A queue that STILL will not drain keeps the marker rather than forcing the
    * wipe — destroying unpushed work is the caller's decision (`force`), never
-   * a retry's. Returns whether the database was wiped, in which case the caller
-   * must open a fresh one: the handle it holds is dead.
+   * a retry's. Nor does a write the server REFUSED during this drain: it is
+   * parked in `_deadletter`, the queue counts as empty, and a wipe would
+   * destroy the only copy of it. So the wipe needs both tables empty; with a
+   * dead letter the mirror stays open for the owner who is signed in again,
+   * who sees the parked write as on any other day, and the marker is cleared —
+   * that sign-out is over, and a later `start()` must not wipe a mirror its
+   * owner is using. Returns whether the database was wiped, in which case the
+   * caller must open a fresh one: the handle it holds is dead.
    */
   async function settleSignOutDebt(handle: OpenHandle): Promise<boolean> {
     const debt = await readSignOutPending(handle.db).catch(() => null);
     if (debt === null) return false;
 
-    await drainBounded(debt.flushTimeoutMs);
+    // The retry waits at least the default: a sign-out that could not wait at
+    // all (no link, `flushTimeoutMs: 0`) says nothing about this session,
+    // which has a token and probably a link.
+    await drainBounded(Math.max(debt.flushTimeoutMs, DEFAULT_FLUSH_TIMEOUT_MS));
     // The owner can change under a drain; a wipe aimed at the mirror that is no
     // longer the open one would delete the wrong account's data.
     if (dbs.current() !== handle || ownerKey() !== handle.ownerKey) return false;
@@ -347,6 +360,18 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
         level: 'warn',
         msg: `${BRAND.name}: an unfinished sign-out could not drain; the mirror stays on this device (SPEC §15)`,
         data: { ownerKey: handle.ownerKey, pending, since: debt.at },
+        at: Date.now(),
+      });
+      return false;
+    }
+
+    const deadLetters = await handle.db.pbo.deadletter.count();
+    if (deadLetters > 0) {
+      await clearSignOutPending(handle.db).catch(() => undefined);
+      cfg.logger?.({
+        level: 'warn',
+        msg: `${BRAND.name}: an unfinished sign-out left refused writes parked; the mirror stays on this device (SPEC §15)`,
+        data: { ownerKey: handle.ownerKey, deadLetters, since: debt.at },
         at: Date.now(),
       });
       return false;
@@ -552,7 +577,7 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
      */
     async signOut(opts?: { flushTimeoutMs?: number; force?: boolean }): Promise<SignOutResult> {
       assertUsable();
-      const flushTimeoutMs = opts?.flushTimeoutMs ?? 5_000;
+      const flushTimeoutMs = opts?.flushTimeoutMs ?? DEFAULT_FLUSH_TIMEOUT_MS;
       const force = opts?.force ?? false;
       const previous = ownerId();
 
@@ -561,13 +586,17 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
 
       await drainBounded(flushTimeoutMs);
 
-      const pending = await handle.db.pbo.pending.count();
+      const queued = await handle.db.pbo.pending.count();
+      // A write the server refused — before or DURING this drain — is parked in
+      // `_deadletter`, not pushed: it is the user's data as much as a queued
+      // one, and a wipe would destroy the only copy (SPEC §15.3). Both count.
+      const pending = queued + (await handle.db.pbo.deadletter.count());
       if (pending > 0 && !force) {
         // The application is about to clear its token and forget this ever
         // happened; the mirror must not. Written before returning so a marker
         // exists even if the process dies on the next line.
         await markSignOutPending(handle.db, { ownerId: previous, flushTimeoutMs, at: Date.now() }).catch(() => undefined);
-        return { drained: false, wiped: false, pending };
+        return { drained: queued === 0, wiped: false, pending };
       }
 
       await release();
@@ -589,7 +618,7 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
       deadLetterStore.set([]);
       recompute();
       emitter.emit('auth-change', { ownerId: null, previous });
-      return { drained: pending === 0, wiped: true, pending };
+      return { drained: queued === 0, wiped: true, pending };
     },
 
     async promoteAnonymousData(opts?: { strategy?: 'copy' | 'move' }): Promise<PromotionResult> {

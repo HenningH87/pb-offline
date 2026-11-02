@@ -1356,11 +1356,14 @@ export interface PromotionResult { promoted: number; byCollection: Record<string
 `signOut({flushTimeoutMs = 5000, force = false})`:
 
 1. Attempt a drain bounded by `flushTimeoutMs`.
-2. If the queue empties: close and `Dexie.delete()` the owner's database, clear
+2. If the queue empties and `_deadletter` is empty: close and `Dexie.delete()` the owner's database, clear
    in-memory state, emit `auth-change`. Return `{drained: true, wiped: true, pending: 0}`.
-3. If it does not: **do not wipe** unless `force`. Return
-   `{drained: false, wiped: false, pending: N}` so the application can warn the user
-   that N changes would be lost. `force: true` wipes anyway, and is the escape
+3. If it does not, or if `_deadletter` holds a write after the drain (refused
+   before it or during it — parked, not pushed, and the only copy): **do not
+   wipe** unless `force`, and mark the mirror (4). Return
+   `{drained, wiped: false, pending: N}`, where N counts queued AND parked
+   writes and `drained` says whether `_pending` emptied, so the application can
+   tell the user that N changes stay on the device. `force: true` wipes anyway, and is the escape
    hatch for a shared or borrowed machine, where the device matters more than
    the N unpushed changes do.
 4. **An unwiped mirror MUST be marked.** The application is about to clear its
@@ -1368,9 +1371,18 @@ export interface PromotionResult { promoted: number; byCollection: Record<string
    `signout` row in `_state` (inside the database it describes, so a later wipe
    erases it for free) records the attempt, and the next `start()` for that
    owner MUST retry: drain again, and wipe once the queue is empty, then open a
-   fresh mirror for the session that is now running. A queue that still will
-   not drain keeps the marker rather than forcing the wipe — destroying
+   fresh mirror for the session that is now running. The retry waits
+   `max(flushTimeoutMs, 5000)`: a sign-out that could not wait at all (no
+   link, `0`) says nothing about the session now running. A queue that still
+   will not drain keeps the marker rather than forcing the wipe — destroying
    unpushed work is the caller's decision (`force`), never a retry's.
+
+   The retry wipes only when `_pending` AND `_deadletter` are both empty. A
+   write the server refuses during the retry's drain is parked, which empties
+   the queue, and a wipe would destroy the only copy of it. With a dead letter
+   the mirror stays open for the owner who is signed in again (who sees the
+   parked write as on any other day) and the marker is CLEARED: that sign-out
+   is over, and a later `start()` must not wipe a mirror its owner is using.
 
    Without this, "sign out" on a dead link leaves a complete copy of the
    account on the device permanently, while the UI reports a completed

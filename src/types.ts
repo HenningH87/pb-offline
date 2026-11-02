@@ -325,8 +325,13 @@ export interface PullResult {
 }
 
 export interface SignOutResult {
+  /** The queue (`_pending`) emptied. */
   drained: boolean;
   wiped: boolean;
+  /**
+   * Writes the server does not have: still queued PLUS parked as dead letters
+   * (SPEC §15.3). Above 0 without `force`, the mirror is kept and marked.
+   */
   pending: number;
 }
 

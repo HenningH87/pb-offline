@@ -4,9 +4,10 @@ import Dexie from 'dexie';
 import { createPBOffline } from '../../src/index.js';
 import { BRAND, dbNameFor } from '../../src/brand.js';
 import { PBOError } from '../../src/errors.js';
-import { asPB, createFakePB, type FakePB } from '../fakes/pb.js';
+import { asPB, createFakePB, sdkError, type FakePB } from '../fakes/pb.js';
 import { resolveConfig } from '../../src/config.js';
 import { close, openForOwner } from '../../src/db/open.js';
+import { readSignOutPending } from '../../src/db/state.js';
 import { tick, uniqueAppId } from './_helpers.js';
 import type { PBOffline, PBOfflineConfig, PBRecord, SyncState } from '../../src/types.js';
 
@@ -391,6 +392,29 @@ describe('signOut (SPEC §15)', () => {
     expect(await Dexie.exists(dbNameFor(appId, 'user1'))).toBe(true);
   });
 
+  it('keeps and marks the mirror when a write is refused during the sign-out drain (SPEC §15.3)', async () => {
+    const { engine, pb, appId } = makeEngine(undefined, createFakePB({ ownerId: 'user1', offline: true }));
+    await engine.start();
+    await engine.collection<Project>('projects').create({ title: 'refused' });
+
+    pb.offline = false;
+    pb.failNext('projects', 'create', sdkError(400, { response: { message: 'rules said no' } }));
+    const result = await engine.signOut({ flushTimeoutMs: 1_000 });
+
+    expect(pb.recordRequests().some((r) => r.method === 'create')).toBe(true);
+    expect(result).toEqual({ drained: true, wiped: false, pending: 1 });
+    expect(await Dexie.exists(dbNameFor(appId, 'user1'))).toBe(true);
+    await engine.destroy();
+    const cfg = { appId, collections: [{ name: 'projects' }, { name: 'tasks', indexes: ['project'] }] };
+    const handle = await openForOwner(resolveConfig(cfg as PBOfflineConfig), 'user1');
+    try {
+      expect(await handle.db.pbo.deadletter.count()).toBe(1);
+      expect(await readSignOutPending(handle.db)).not.toBeNull();
+    } finally {
+      await close(handle);
+    }
+  });
+
   it('force wipes anyway', async () => {
     const { engine, appId } = makeEngine(undefined, createFakePB({ ownerId: 'user1', offline: true }));
     await engine.start();
@@ -458,6 +482,47 @@ describe('signOut (SPEC §15)', () => {
     await tick(20);
     expect(await second.collection<Project>('projects').getAll()).toHaveLength(1);
     expect(await Dexie.exists(dbNameFor(appId, 'user1'))).toBe(true);
+  });
+
+  /**
+   * SYNC-KEEP-1. The server refuses the retried write: it is parked in
+   * `_deadletter`, the queue counts as empty, and a wipe would destroy the only
+   * copy of it. The retry keeps the mirror and clears the marker.
+   */
+  it('keeps the mirror when the retry drain parks a refused write, and clears the marker', async () => {
+    const appId = uniqueAppId();
+    const cfg = { appId, collections: [{ name: 'projects' }] };
+    dbNames.push(dbNameFor(appId, 'user1'));
+
+    const pb = createFakePB({ ownerId: 'user1', offline: true });
+    const first = createPBOffline(asPB(pb), cfg as PBOfflineConfig);
+    engines.push(first);
+    await first.start();
+    await first.collection<Project>('projects').create({ title: 'refused' });
+    expect(await first.signOut({ flushTimeoutMs: 0 })).toMatchObject({ wiped: false, pending: 1 });
+    await first.destroy();
+
+    pb.offline = false;
+    pb.failNext('projects', 'create', sdkError(400, { response: { message: 'rules said no' } }));
+    const second = createPBOffline(asPB(pb), cfg as PBOfflineConfig);
+    engines.push(second);
+    await second.start();
+    await tick(20);
+
+    expect(pb.recordRequests().some((r) => r.method === 'create')).toBe(true);
+    expect(await second.collection<Project>('projects').getAll()).toHaveLength(1);
+    let rows: unknown[] = [];
+    second.deadLetters.subscribe((v) => (rows = v))();
+    expect(rows).toHaveLength(1);
+    await second.destroy();
+
+    const handle = await openForOwner(resolveConfig(cfg as PBOfflineConfig), 'user1');
+    try {
+      expect(await readSignOutPending(handle.db)).toBeNull();
+      expect(await handle.db.pbo.deadletter.count()).toBe(1);
+    } finally {
+      await close(handle);
+    }
   });
 });
 
