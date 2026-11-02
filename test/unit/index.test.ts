@@ -392,6 +392,29 @@ describe('signOut (SPEC §15)', () => {
     expect(await Dexie.exists(dbNameFor(appId, 'user1'))).toBe(true);
   });
 
+  it('keeps and marks the mirror when a write is refused during the sign-out drain (SPEC §15.3)', async () => {
+    const { engine, pb, appId } = makeEngine(undefined, createFakePB({ ownerId: 'user1', offline: true }));
+    await engine.start();
+    await engine.collection<Project>('projects').create({ title: 'refused' });
+
+    pb.offline = false;
+    pb.failNext('projects', 'create', sdkError(400, { response: { message: 'rules said no' } }));
+    const result = await engine.signOut({ flushTimeoutMs: 1_000 });
+
+    expect(pb.recordRequests().some((r) => r.method === 'create')).toBe(true);
+    expect(result).toEqual({ drained: true, wiped: false, pending: 1 });
+    expect(await Dexie.exists(dbNameFor(appId, 'user1'))).toBe(true);
+    await engine.destroy();
+    const cfg = { appId, collections: [{ name: 'projects' }, { name: 'tasks', indexes: ['project'] }] };
+    const handle = await openForOwner(resolveConfig(cfg as PBOfflineConfig), 'user1');
+    try {
+      expect(await handle.db.pbo.deadletter.count()).toBe(1);
+      expect(await readSignOutPending(handle.db)).not.toBeNull();
+    } finally {
+      await close(handle);
+    }
+  });
+
   it('force wipes anyway', async () => {
     const { engine, appId } = makeEngine(undefined, createFakePB({ ownerId: 'user1', offline: true }));
     await engine.start();

@@ -586,13 +586,17 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
 
       await drainBounded(flushTimeoutMs);
 
-      const pending = await handle.db.pbo.pending.count();
+      const queued = await handle.db.pbo.pending.count();
+      // A write the server refused — before or DURING this drain — is parked in
+      // `_deadletter`, not pushed: it is the user's data as much as a queued
+      // one, and a wipe would destroy the only copy (SPEC §15.3). Both count.
+      const pending = queued + (await handle.db.pbo.deadletter.count());
       if (pending > 0 && !force) {
         // The application is about to clear its token and forget this ever
         // happened; the mirror must not. Written before returning so a marker
         // exists even if the process dies on the next line.
         await markSignOutPending(handle.db, { ownerId: previous, flushTimeoutMs, at: Date.now() }).catch(() => undefined);
-        return { drained: false, wiped: false, pending };
+        return { drained: queued === 0, wiped: false, pending };
       }
 
       await release();
@@ -614,7 +618,7 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
       deadLetterStore.set([]);
       recompute();
       emitter.emit('auth-change', { ownerId: null, previous });
-      return { drained: pending === 0, wiped: true, pending };
+      return { drained: queued === 0, wiped: true, pending };
     },
 
     async promoteAnonymousData(opts?: { strategy?: 'copy' | 'move' }): Promise<PromotionResult> {

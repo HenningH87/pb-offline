@@ -1356,11 +1356,14 @@ export interface PromotionResult { promoted: number; byCollection: Record<string
 `signOut({flushTimeoutMs = 5000, force = false})`:
 
 1. Attempt a drain bounded by `flushTimeoutMs`.
-2. If the queue empties: close and `Dexie.delete()` the owner's database, clear
+2. If the queue empties and `_deadletter` is empty: close and `Dexie.delete()` the owner's database, clear
    in-memory state, emit `auth-change`. Return `{drained: true, wiped: true, pending: 0}`.
-3. If it does not: **do not wipe** unless `force`. Return
-   `{drained: false, wiped: false, pending: N}` so the application can warn the user
-   that N changes would be lost. `force: true` wipes anyway, and is the escape
+3. If it does not, or if `_deadletter` holds a write after the drain (refused
+   before it or during it — parked, not pushed, and the only copy): **do not
+   wipe** unless `force`, and mark the mirror (4). Return
+   `{drained, wiped: false, pending: N}`, where N counts queued AND parked
+   writes and `drained` says whether `_pending` emptied, so the application can
+   tell the user that N changes stay on the device. `force: true` wipes anyway, and is the escape
    hatch for a shared or borrowed machine, where the device matters more than
    the N unpushed changes do.
 4. **An unwiped mirror MUST be marked.** The application is about to clear its

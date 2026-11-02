@@ -235,6 +235,10 @@ those actually pushed. 500 cases.
 - `signOut` with an empty queue wipes; with a non-empty queue that cannot drain, does
   **not** wipe and reports `pending: N`; `force` wipes anyway.
 - `signOut` does not call `authStore.clear()`.
+- **a write refused during the sign-out drain is not wiped** (SPEC §15.3, added
+  2 Nov 2026): the server answers the create with a 400, the write is parked;
+  `signOut` returns `{drained: true, wiped: false, pending: 1}`, the mirror stays
+  and is marked. A clean sign-out still wipes.
 - **the unwiped mirror is marked, and the next `start()` finishes the job**
   (SPEC §15, added after the 10 Sep audit): an offline `signOut` that reports
   `wiped: false` leaves a `signout` row in `_state`; a later engine for the same
