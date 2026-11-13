@@ -352,3 +352,40 @@ describe('cursor bookkeeping', () => {
     });
   });
 });
+
+describe('mutable visibility through a full resync (TIER-3: a plan that lapses and renews)', () => {
+  it('a row the server stops showing leaves the mirror, and comes back with its OLD updated when shown again', async () => {
+    const h = await open();
+    const own = rec('own', '2026-01-01 00:00:00.000Z');
+    const plus = rec('plus', '2026-01-02 00:00:00.000Z');
+    pb.setPages('projects', [[own, plus]]);
+    await fullResync(h.pull(), 'plan-change');
+    expect(await t.handle.db.table('projects').count()).toBe(2);
+
+    // The lapse: the rule hides `plus`; no row changed, so no tombstone.
+    pb.setPages('projects', [[own]]);
+    await fullResync(h.pull(), 'plan-change');
+    expect(await t.handle.db.table('projects').get('plus')).toBeUndefined();
+    expect(await t.handle.db.table('projects').get('own')).toBeDefined();
+
+    // The renewal: shown again, its `updated` older than every cursor.
+    pb.setPages('projects', [[own, plus]]);
+    await fullResync(h.pull(), 'plan-change');
+    expect(await t.handle.db.table('projects').get('plus')).toMatchObject({ title: 'server-plus' });
+  });
+
+  it('keeps a row the user wrote and has not sent, through the wipe', async () => {
+    const h = await open();
+    const own = rec('own', '2026-01-01 00:00:00.000Z');
+    pb.setPages('projects', [[own]]);
+    await fullResync(h.pull(), 'plan-change');
+    const mine = await crudCreate(t.deps('projects'), { title: 'written offline' });
+
+    // Link down at the wipe: the create is kept through it and put back.
+    h.online = false;
+    pb.setPages('projects', [[own]]);
+    await fullResync(h.pull({ drain: () => drain(h.push()) }), 'plan-change');
+    expect(await t.handle.db.table('projects').get(mine.id)).toMatchObject({ title: 'written offline' });
+    expect(await t.handle.db.pbo.pending.count()).toBe(1);
+  });
+});
