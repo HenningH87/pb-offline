@@ -4,10 +4,12 @@
  * Public entry point. Nothing but `createPBOffline` and type re-exports lives
  * here (SPEC §1.1).
  */
+import type { Table } from 'dexie';
 import type PocketBase from 'pocketbase';
 import type {
   Collection,
   DeadLetter,
+  EvictResult,
   PBOffline,
   PBOfflineConfig,
   PBRecord,
@@ -561,6 +563,44 @@ export function createPBOffline(pb: PocketBase, config: PBOfflineConfig): PBOffl
     },
 
     /**
+     * SPEC §11.6. Drop rows from THIS device's mirror and tell nobody: no queue
+     * entry, no request, no tombstone. The server keeps the record. For an
+     * application that knows a record has left the user's view while no pull
+     * can say so (a plan that ran out while the device was offline).
+     *
+     * A row with a write still queued or parked as a dead letter is KEPT and
+     * named in `kept`: that write is the user's and is sent (or shown) as
+     * before. The cursors are untouched, so an incremental pull does not bring
+     * an evicted row back; `fullResync()` does, if the server still shows it.
+     */
+    async evict(collection: string, ids: readonly string[]): Promise<EvictResult> {
+      assertUsable();
+      collectionConfig(cfg, collection); // throws config/unknown-collection
+      const db = dbs.current()?.db;
+      const result: EvictResult = { evicted: [], kept: [] };
+      if (!db || ids.length === 0) return result;
+      const table = db.table(collection) as Table<PBRecord, string>;
+      await db.transaction('rw', [table, db.pbo.pending, db.pbo.deadletter, db.pbo.meta], async () => {
+        for (const id of new Set(ids)) {
+          const queued = await db.pbo.pending.where('[collection+recordId]').equals([collection, id]).count();
+          const parked = await db.pbo.deadletter
+            .where('recordId')
+            .equals(id)
+            .filter((letter) => letter.collection === collection)
+            .count();
+          if (queued + parked > 0) {
+            result.kept.push(id);
+            continue;
+          }
+          await table.delete(id);
+          await db.pbo.meta.delete([collection, id]);
+          result.evicted.push(id);
+        }
+      });
+      return result;
+    },
+
+    /**
      * SPEC §15. Never calls `pb.authStore.clear()`: token lifetime is the
      * application's decision, and this must be safe on either side of it.
      *
@@ -708,6 +748,7 @@ export type {
   PushResult,
   PullResult,
   SignOutResult,
+  EvictResult,
   PromotionResult,
   IdFormat,
 } from './types.js';

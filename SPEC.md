@@ -233,6 +233,8 @@ export interface PBOffline {
   sync(): Promise<void>;
   /** Wipe local mirror + cursors and refetch from scratch (§11). Queue is preserved. */
   fullResync(reason?: string): Promise<void>;
+  /** Drop rows from this device's mirror only; rows with unsent writes stay (§11.6). */
+  evict(collection: string, ids: readonly string[]): Promise<EvictResult>;
   /** Flush the queue, then wipe this owner's database (§15). */
   signOut(opts?: { flushTimeoutMs?: number; force?: boolean }): Promise<SignOutResult>;
   /** Promote anonymous local data to the signed-in owner (§14). */
@@ -1227,6 +1229,23 @@ Procedure — normative:
 
 A failure at any step leaves the mirror empty-but-consistent and emits
 `{phase:'failed'}`; the next reconnect retries from step 3.
+
+### 11.6 · Evict — a local removal the server never hears of
+
+`evict(collection, ids)` removes rows from this device's mirror without a queue
+entry, a request or a tombstone. It is for an application that knows a record has
+left the user's view while no pull can say so (a plan that ran out while the
+device was offline). Normative:
+
+- One transaction over the collection table, `_pending`, `_deadletter` and `_meta`.
+- A row with an entry in `_pending` or `_deadletter` MUST be kept and returned in
+  `kept`. The user's unsent or refused write is never destroyed (§15.3).
+- Every other named row is deleted with its `_meta` row and returned in `evicted`.
+  An id with no row is reported as evicted (nothing is held).
+- Cursors are untouched. An incremental pull does not bring an evicted row back
+  (its `updated` is behind the cursor); `fullResync()` does, when the server still
+  shows it.
+- Allowed in any tab, drainer or not: it is a local write.
 
 ---
 

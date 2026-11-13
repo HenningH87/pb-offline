@@ -669,3 +669,87 @@ describe('a live query built before start() (SPEC §2.3)', () => {
     list.off();
   });
 });
+
+describe('evict (SPEC §11.6)', () => {
+  it('drops rows from the mirror only, and keeps a row with a queued or parked write', async () => {
+    const { engine, pb } = makeEngine({}, createFakePB({ ownerId: 'user1', offline: true }));
+    await engine.start();
+    const projects = engine.collection<Project>('projects');
+    const a = await projects.create({ title: 'A' });
+    const b = await projects.create({ title: 'B' });
+    await tick(20);
+    // Offline, so both creates are still in `_pending`.
+    let pending = 0;
+    engine.pendingCount.subscribe((v) => (pending = v))();
+    expect(pending).toBe(2);
+
+    // Nothing named is evicted while its create is unsent.
+    expect(await engine.evict('projects', [a.id, b.id])).toEqual({ evicted: [], kept: [a.id, b.id] });
+    expect(await projects.count()).toBe(2);
+
+    const requestsBefore = pb.requests.length;
+    const result = await engine.evict('projects', ['zzzzzzzzzzzzzzz']);
+    expect(result).toEqual({ evicted: ['zzzzzzzzzzzzzzz'], kept: [] });
+    // Nothing was queued and nothing was sent.
+    engine.pendingCount.subscribe((v) => (pending = v))();
+    expect(pending).toBe(2);
+    expect(pb.requests.length).toBe(requestsBefore);
+  });
+
+  it('removes a synced row and its meta, and queues nothing', async () => {
+    const appId = uniqueAppId();
+    const config = { appId, collections: [{ name: 'projects' }] } as PBOfflineConfig;
+    const cfg = resolveConfig(config);
+    const handle = await openForOwner(cfg, 'user1');
+    await handle.db.table('projects').bulkPut([
+      { id: 'aaaaaaaaaaaaaaa', title: 'Kept', updated: '2026-01-01 00:00:00.000Z' },
+      { id: 'bbbbbbbbbbbbbbb', title: 'Gone', updated: '2026-01-01 00:00:00.000Z' },
+    ]);
+    await handle.db.pbo.meta.put({ collection: 'projects', recordId: 'bbbbbbbbbbbbbbb', state: 'clean' } as never);
+    await close(handle);
+
+    const pb = createFakePB({ ownerId: 'user1', offline: true });
+    const engine = createPBOffline(asPB(pb), config);
+    engines.push(engine);
+    dbNames.push(dbNameFor(appId, 'user1'));
+    await engine.start();
+    const projects = engine.collection<Project>('projects');
+
+    expect(await engine.evict('projects', ['bbbbbbbbbbbbbbb'])).toEqual({ evicted: ['bbbbbbbbbbbbbbb'], kept: [] });
+    expect((await projects.getAll()).map((r) => r.id)).toEqual(['aaaaaaaaaaaaaaa']);
+    expect(await projects.meta('bbbbbbbbbbbbbbb')).toBeUndefined();
+    let pending = -1;
+    engine.pendingCount.subscribe((v) => (pending = v))();
+    expect(pending).toBe(0);
+  });
+
+  it('keeps a row whose refused write is parked as a dead letter', async () => {
+    const appId = uniqueAppId();
+    const config = { appId, collections: [{ name: 'projects' }] } as PBOfflineConfig;
+    const handle = await openForOwner(resolveConfig(config), 'user1');
+    await handle.db.table('projects').put({ id: 'aaaaaaaaaaaaaaa', title: 'Refused' });
+    await handle.db.pbo.deadletter.add({
+      collection: 'projects',
+      recordId: 'aaaaaaaaaaaaaaa',
+      op: 'create',
+      payload: { id: 'aaaaaaaaaaaaaaa', title: 'Refused' },
+      error: { code: 'push/rejected', message: 'rules said no', retryable: false, at: Date.now() },
+      at: Date.now(),
+    } as never);
+    await close(handle);
+
+    const engine = createPBOffline(asPB(createFakePB({ ownerId: 'user1', offline: true })), config);
+    engines.push(engine);
+    dbNames.push(dbNameFor(appId, 'user1'));
+    await engine.start();
+
+    expect(await engine.evict('projects', ['aaaaaaaaaaaaaaa'])).toEqual({ evicted: [], kept: ['aaaaaaaaaaaaaaa'] });
+    expect(await engine.collection<Project>('projects').get('aaaaaaaaaaaaaaa')).toMatchObject({ title: 'Refused' });
+  });
+
+  it('refuses a collection that is not configured', async () => {
+    const { engine } = makeEngine();
+    await engine.start();
+    await expect(engine.evict('nope', ['aaaaaaaaaaaaaaa'])).rejects.toMatchObject({ code: 'config/unknown-collection' });
+  });
+});

@@ -335,6 +335,14 @@ export interface SignOutResult {
   pending: number;
 }
 
+/** What `evict()` did (SPEC §11.6). */
+export interface EvictResult {
+  /** Ids whose rows left this device's mirror. */
+  evicted: string[];
+  /** Ids kept because a write to them is still queued or parked (the user's unsent work). */
+  kept: string[];
+}
+
 export interface PromotionResult {
   promoted: number;
   byCollection: Record<string, number>;
@@ -389,6 +397,7 @@ export interface PBOffline {
   pull(collections?: string[]): Promise<PullResult>;
   sync(): Promise<void>;
   fullResync(reason?: string): Promise<void>;
+  evict(collection: string, ids: readonly string[]): Promise<EvictResult>;
   signOut(opts?: { flushTimeoutMs?: number; force?: boolean }): Promise<SignOutResult>;
   promoteAnonymousData(opts?: { strategy?: 'copy' | 'move' }): Promise<PromotionResult>;
 
